@@ -1,5 +1,7 @@
 import json
+import socket
 from io import BytesIO
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -10,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import AuthenticationError as OpenAIAuthenticationError
 from pypdf import PdfReader
 
+from app.config import settings
 from app.models import (
     ActionableJob,
     ActionableMatchJobsResponse,
@@ -117,6 +120,62 @@ async def _run_service_with_debug_or_raise(payload: MatchJobsRequest) -> tuple[M
             status_code=500,
             detail="Unexpected server error while processing the request.",
         ) from exc
+
+
+def _resolve_host(target_url: str) -> tuple[bool, str]:
+    hostname = urlparse(target_url).hostname
+    if not hostname:
+        return False, "invalid_url"
+    try:
+        socket.gethostbyname(hostname)
+        return True, "ok"
+    except Exception as exc:
+        return False, f"dns_error: {exc}"
+
+
+async def _probe_http(target_url: str, *, headers: dict | None = None) -> tuple[bool, int | None, str]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(target_url, headers=headers)
+        return True, response.status_code, "ok"
+    except Exception as exc:
+        return False, None, str(exc)
+
+
+@app.get("/diag/upstream")
+async def diag_upstream() -> dict:
+    tinyfish_dns_ok, tinyfish_dns_detail = _resolve_host(settings.tinyfish_base_url)
+    tinyfish_url = f"{settings.tinyfish_base_url.rstrip('/')}/v1/search"
+    tinyfish_http_ok, tinyfish_http_status, tinyfish_http_detail = await _probe_http(
+        tinyfish_url,
+        headers={"Authorization": f"Bearer {settings.tinyfish_api_key}"},
+    )
+
+    openai_base = "https://api.openai.com"
+    openai_dns_ok, openai_dns_detail = _resolve_host(openai_base)
+    openai_http_ok, openai_http_status, openai_http_detail = await _probe_http(
+        f"{openai_base}/v1/models",
+        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+    )
+
+    return {
+        "tinyfish": {
+            "base_url": settings.tinyfish_base_url,
+            "dns_ok": tinyfish_dns_ok,
+            "dns_detail": tinyfish_dns_detail,
+            "http_ok": tinyfish_http_ok,
+            "http_status": tinyfish_http_status,
+            "http_detail": tinyfish_http_detail,
+        },
+        "openai": {
+            "base_url": openai_base,
+            "dns_ok": openai_dns_ok,
+            "dns_detail": openai_dns_detail,
+            "http_ok": openai_http_ok,
+            "http_status": openai_http_status,
+            "http_detail": openai_http_detail,
+        },
+    }
 
 
 @app.get("/health")
