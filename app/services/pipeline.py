@@ -48,18 +48,35 @@ class DecisionEngineService:
         self.contact_scorer = ContactScorer()
         self.message_generator = MessageGenerator()
 
-    async def ingest_jobs(self, sources: list[str]) -> list[NormalizedJob]:
+    async def ingest_jobs(self, sources: list[str]) -> tuple[list[NormalizedJob], list[dict]]:
         collected: list[dict] = []
+        source_stats: list[dict] = []
         for source in sources:
             try:
                 scraped = await self.tinyfish.scrape_jobs(source=source, location="Singapore")
+                source_stats.append(
+                    {
+                        "source": source,
+                        "ok": True,
+                        "raw_jobs": len(scraped),
+                        "error": None,
+                    }
+                )
             except Exception:
                 # Keep the strict pipeline running even when one ingestion source is unavailable.
+                source_stats.append(
+                    {
+                        "source": source,
+                        "ok": False,
+                        "raw_jobs": 0,
+                        "error": "ingestion_failed",
+                    }
+                )
                 continue
             for job in scraped:
                 job["source"] = source
             collected.extend(scraped)
-        return _normalize_jobs(collected)
+        return _normalize_jobs(collected), source_stats
 
     async def parse_cv(self, cv_text: str) -> CVProfile:
         parsed = await self.cv_parser.parse(cv_text)
@@ -75,15 +92,41 @@ class DecisionEngineService:
             projects=merged_projects,
         )
 
-    async def run(self, cv_text: str, jobs: list[NormalizedJob], include_ingestion: bool, ingestion_sources: list[str]) -> MatchJobsResponse:
+    async def run(
+        self,
+        cv_text: str,
+        jobs: list[NormalizedJob],
+        include_ingestion: bool,
+        ingestion_sources: list[str],
+    ) -> MatchJobsResponse:
+        result, _ = await self.run_with_debug(
+            cv_text=cv_text,
+            jobs=jobs,
+            include_ingestion=include_ingestion,
+            ingestion_sources=ingestion_sources,
+        )
+        return result
+
+    async def run_with_debug(
+        self,
+        cv_text: str,
+        jobs: list[NormalizedJob],
+        include_ingestion: bool,
+        ingestion_sources: list[str],
+    ) -> tuple[MatchJobsResponse, dict]:
         job_pool = list(jobs)
+        source_stats: list[dict] = []
+        ingested_count = 0
         if include_ingestion:
-            ingested = await self.ingest_jobs(ingestion_sources)
+            ingested, source_stats = await self.ingest_jobs(ingestion_sources)
+            ingested_count = len(ingested)
             job_pool.extend(ingested)
 
         profile = await self.parse_cv(cv_text)
         final_results: list[JobOutput] = []
         matcher_input = profile.model_dump()
+        dropped_low_match = 0
+        dropped_no_contacts = 0
 
         for job in job_pool:
             match = await self.matcher.evaluate(
@@ -91,6 +134,7 @@ class DecisionEngineService:
                 job_description=f"{job.title}\n{job.description}",
             )
             if match.score < settings.match_threshold:
+                dropped_low_match += 1
                 continue
 
             intent = await self.intent_extractor.extract(
@@ -115,6 +159,7 @@ class DecisionEngineService:
                 ),
             )
             if not top_contacts:
+                dropped_no_contacts += 1
                 continue
 
             best_contact = top_contacts[0]
@@ -159,4 +204,14 @@ class DecisionEngineService:
                 )
             )
 
-        return MatchJobsResponse(profile=profile, matched_jobs=final_results)
+        debug = {
+            "input_jobs_count": len(jobs),
+            "include_ingestion": include_ingestion,
+            "ingested_jobs_count": ingested_count,
+            "job_pool_count": len(job_pool),
+            "dropped_low_match_count": dropped_low_match,
+            "dropped_no_contact_count": dropped_no_contacts,
+            "kept_jobs_count": len(final_results),
+            "ingestion_sources": source_stats,
+        }
+        return MatchJobsResponse(profile=profile, matched_jobs=final_results), debug

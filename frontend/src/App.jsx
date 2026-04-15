@@ -53,6 +53,7 @@ function App() {
           cv_text: cvText.trim(),
           jobs: [],
           include_ingestion: true,
+          include_debug: true,
         }),
       });
 
@@ -69,6 +70,11 @@ function App() {
       }
 
       const payload = await response.json();
+      if (payload.debug) {
+        // Useful in devtools to understand strict-filter funnel behavior.
+        // eslint-disable-next-line no-console
+        console.log('DecisionEngine debug', payload.debug);
+      }
       setOpportunities(payload.opportunities || []);
       setStage('results');
     } catch (requestError) {

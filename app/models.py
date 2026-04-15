@@ -63,6 +63,7 @@ class MatchJobsRequest(BaseModel):
     cv_text: str | None = None
     jobs: list[NormalizedJob] = Field(default_factory=list)
     include_ingestion: bool = False
+    include_debug: bool = False
     ingestion_sources: list[str] = Field(
         default_factory=lambda: [
             "greenhouse",
@@ -95,3 +96,4 @@ class ActionableOpportunity(BaseModel):
 class ActionableMatchJobsResponse(BaseModel):
     profile: CVProfile
     opportunities: list[ActionableOpportunity]
+    debug: dict[str, Any] | None = None

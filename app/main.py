@@ -1,11 +1,13 @@
 import json
 from io import BytesIO
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from openai import AuthenticationError as OpenAIAuthenticationError
 from pypdf import PdfReader
 
 from app.models import (
@@ -65,6 +67,56 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
         if page_text.strip():
             pages.append(page_text.strip())
     return "\n\n".join(pages).strip()
+
+
+async def _run_service_or_raise(payload: MatchJobsRequest) -> MatchJobsResponse:
+    try:
+        return await service.run(
+            cv_text=payload.cv_text or "",
+            jobs=payload.jobs,
+            include_ingestion=payload.include_ingestion,
+            ingestion_sources=payload.ingestion_sources,
+        )
+    except OpenAIAuthenticationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI API key is invalid. Update OPENAI_API_KEY in .env and retry.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="A required upstream API is unreachable right now. Please retry shortly.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected server error while processing the request.",
+        ) from exc
+
+
+async def _run_service_with_debug_or_raise(payload: MatchJobsRequest) -> tuple[MatchJobsResponse, dict]:
+    try:
+        return await service.run_with_debug(
+            cv_text=payload.cv_text or "",
+            jobs=payload.jobs,
+            include_ingestion=payload.include_ingestion,
+            ingestion_sources=payload.ingestion_sources,
+        )
+    except OpenAIAuthenticationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI API key is invalid. Update OPENAI_API_KEY in .env and retry.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="A required upstream API is unreachable right now. Please retry shortly.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected server error while processing the request.",
+        ) from exc
 
 
 @app.get("/health")
@@ -151,13 +203,7 @@ async def custom_swagger_ui_html() -> HTMLResponse:
 async def match_jobs(payload: MatchJobsRequest) -> MatchJobsResponse:
     if not payload.cv_text:
         raise HTTPException(status_code=400, detail="cv_text is required.")
-
-    return await service.run(
-        cv_text=payload.cv_text,
-        jobs=payload.jobs,
-        include_ingestion=payload.include_ingestion,
-        ingestion_sources=payload.ingestion_sources,
-    )
+    return await _run_service_or_raise(payload)
 
 
 @app.post("/match_jobs_actionable", response_model=ActionableMatchJobsResponse)
@@ -165,12 +211,13 @@ async def match_jobs_actionable(payload: MatchJobsRequest) -> ActionableMatchJob
     if not payload.cv_text:
         raise HTTPException(status_code=400, detail="cv_text is required.")
 
-    result = await service.run(
-        cv_text=payload.cv_text,
-        jobs=payload.jobs,
-        include_ingestion=payload.include_ingestion,
-        ingestion_sources=payload.ingestion_sources,
-    )
+    if payload.include_debug:
+        result, debug = await _run_service_with_debug_or_raise(payload)
+        response = _to_actionable_response(result)
+        response.debug = debug
+        return response
+
+    result = await _run_service_or_raise(payload)
 
     return _to_actionable_response(result)
 
@@ -213,10 +260,11 @@ async def match_jobs_from_cv(
         ingestion_sources=ingestion_sources,
     )
 
-    result = await service.run(
-        cv_text=payload.cv_text or "",
-        jobs=payload.jobs,
-        include_ingestion=payload.include_ingestion,
-        ingestion_sources=payload.ingestion_sources,
-    )
+    if payload.include_debug:
+        result, debug = await _run_service_with_debug_or_raise(payload)
+        response = _to_actionable_response(result)
+        response.debug = debug
+        return response
+
+    result = await _run_service_or_raise(payload)
     return _to_actionable_response(result)
