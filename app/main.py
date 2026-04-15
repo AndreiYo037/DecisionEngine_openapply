@@ -1,9 +1,19 @@
-from fastapi import FastAPI, HTTPException
+import json
+from io import BytesIO
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pypdf import PdfReader
 
-from app.models import MatchJobsRequest, MatchJobsResponse
+from app.models import (
+    ActionableJob,
+    ActionableMatchJobsResponse,
+    ActionableOpportunity,
+    MatchJobsRequest,
+    MatchJobsResponse,
+)
 from app.services.pipeline import DecisionEngineService
 
 app = FastAPI(
@@ -16,6 +26,36 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 service = DecisionEngineService()
+
+
+def _to_actionable_response(result: MatchJobsResponse) -> ActionableMatchJobsResponse:
+    opportunities: list[ActionableOpportunity] = []
+    for item in result.matched_jobs:
+        if not item.contacts:
+            continue
+        opportunities.append(
+            ActionableOpportunity(
+                job=ActionableJob(
+                    title=str(item.job.get("title", "")),
+                    company=str(item.job.get("company", "")),
+                    match_score=int(item.job.get("match_score", 0)),
+                ),
+                best_contact=item.contacts[0],
+                alternate_contacts=item.contacts[1:3],
+                message=item.outreach_message,
+            )
+        )
+    return ActionableMatchJobsResponse(profile=result.profile, opportunities=opportunities)
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    reader = PdfReader(BytesIO(pdf_bytes))
+    pages: list[str] = []
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            pages.append(page_text.strip())
+    return "\n\n".join(pages).strip()
 
 
 @app.get("/health")
@@ -109,3 +149,65 @@ async def match_jobs(payload: MatchJobsRequest) -> MatchJobsResponse:
         include_ingestion=payload.include_ingestion,
         ingestion_sources=payload.ingestion_sources,
     )
+
+
+@app.post("/match_jobs_actionable", response_model=ActionableMatchJobsResponse)
+async def match_jobs_actionable(payload: MatchJobsRequest) -> ActionableMatchJobsResponse:
+    if not payload.cv_text:
+        raise HTTPException(status_code=400, detail="cv_text is required.")
+
+    result = await service.run(
+        cv_text=payload.cv_text,
+        jobs=payload.jobs,
+        include_ingestion=payload.include_ingestion,
+        ingestion_sources=payload.ingestion_sources,
+    )
+
+    return _to_actionable_response(result)
+
+
+@app.post("/match_jobs_from_cv", response_model=ActionableMatchJobsResponse)
+async def match_jobs_from_cv(
+    cv_file: UploadFile = File(...),
+    jobs_json: str = Form("[]"),
+    include_ingestion: bool = Form(False),
+    ingestion_sources_json: str = Form(
+        '["greenhouse","lever","workday","mycareersfuture","company_career_pages"]'
+    ),
+) -> ActionableMatchJobsResponse:
+    filename = (cv_file.filename or "").lower()
+    if not filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="cv_file must be a PDF.")
+
+    raw_bytes = await cv_file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="cv_file is empty.")
+
+    try:
+        cv_text = _extract_pdf_text(raw_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to parse PDF: {exc}") from exc
+
+    if not cv_text:
+        raise HTTPException(status_code=400, detail="No readable text found in PDF.")
+
+    try:
+        jobs = json.loads(jobs_json)
+        ingestion_sources = json.loads(ingestion_sources_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON form field: {exc}") from exc
+
+    payload = MatchJobsRequest(
+        cv_text=cv_text,
+        jobs=jobs,
+        include_ingestion=include_ingestion,
+        ingestion_sources=ingestion_sources,
+    )
+
+    result = await service.run(
+        cv_text=payload.cv_text or "",
+        jobs=payload.jobs,
+        include_ingestion=payload.include_ingestion,
+        ingestion_sources=payload.ingestion_sources,
+    )
+    return _to_actionable_response(result)

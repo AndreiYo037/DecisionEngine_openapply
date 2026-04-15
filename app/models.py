@@ -77,3 +77,21 @@ class MatchJobsRequest(BaseModel):
 class MatchJobsResponse(BaseModel):
     profile: CVProfile
     matched_jobs: list[JobOutput]
+
+
+class ActionableJob(BaseModel):
+    title: str
+    company: str
+    match_score: int = Field(ge=0, le=100)
+
+
+class ActionableOpportunity(BaseModel):
+    job: ActionableJob
+    best_contact: ScoredContact
+    alternate_contacts: list[ScoredContact] = Field(default_factory=list)
+    message: str
+
+
+class ActionableMatchJobsResponse(BaseModel):
+    profile: CVProfile
+    opportunities: list[ActionableOpportunity]
