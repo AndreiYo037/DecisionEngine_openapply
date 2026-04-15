@@ -1,31 +1,22 @@
-import json
 import socket
-from io import BytesIO
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from openai import AuthenticationError as OpenAIAuthenticationError
-from pypdf import PdfReader
 
 from app.config import settings
-from app.models import (
-    ActionableJob,
-    ActionableMatchJobsResponse,
-    ActionableOpportunity,
-    MatchJobsRequest,
-    MatchJobsResponse,
-)
-from app.services.pipeline import DecisionEngineService
+from app.ingestion.manual_input import ingest_jobs_from_urls
+from app.models import RankJobsRequest, RankedJobResult
+from app.ranking.decision_engine import rank_jobs
 
 app = FastAPI(
     title="DecisionEngine OpenApply",
-    description="Internship decision engine that returns only jobs with high fit and high-confidence contacts.",
-    version="1.0.0",
+    description="Decision engine that ranks manually provided job URLs by CV fit and reachable contacts.",
+    version="2.0.0",
     docs_url=None,
 )
 
@@ -38,88 +29,6 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-service = DecisionEngineService()
-
-
-def _to_actionable_response(result: MatchJobsResponse) -> ActionableMatchJobsResponse:
-    opportunities: list[ActionableOpportunity] = []
-    for item in result.matched_jobs:
-        if not item.contacts:
-            continue
-        opportunities.append(
-            ActionableOpportunity(
-                job=ActionableJob(
-                    title=str(item.job.get("title", "")),
-                    company=str(item.job.get("company", "")),
-                    match_score=int(item.job.get("match_score", 0)),
-                ),
-                best_contact=item.contacts[0],
-                alternate_contacts=item.contacts[1:3],
-                message=item.outreach_message,
-            )
-        )
-    return ActionableMatchJobsResponse(profile=result.profile, opportunities=opportunities)
-
-
-def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    reader = PdfReader(BytesIO(pdf_bytes))
-    pages: list[str] = []
-    for page in reader.pages:
-        page_text = page.extract_text() or ""
-        if page_text.strip():
-            pages.append(page_text.strip())
-    return "\n\n".join(pages).strip()
-
-
-async def _run_service_or_raise(payload: MatchJobsRequest) -> MatchJobsResponse:
-    try:
-        return await service.run(
-            cv_text=payload.cv_text or "",
-            jobs=payload.jobs,
-            include_ingestion=payload.include_ingestion,
-            ingestion_sources=payload.ingestion_sources,
-        )
-    except OpenAIAuthenticationError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="OpenAI API key is invalid. Update OPENAI_API_KEY in .env and retry.",
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="A required upstream API is unreachable right now. Please retry shortly.",
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Unexpected server error while processing the request.",
-        ) from exc
-
-
-async def _run_service_with_debug_or_raise(payload: MatchJobsRequest) -> tuple[MatchJobsResponse, dict]:
-    try:
-        return await service.run_with_debug(
-            cv_text=payload.cv_text or "",
-            jobs=payload.jobs,
-            include_ingestion=payload.include_ingestion,
-            ingestion_sources=payload.ingestion_sources,
-        )
-    except OpenAIAuthenticationError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="OpenAI API key is invalid. Update OPENAI_API_KEY in .env and retry.",
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="A required upstream API is unreachable right now. Please retry shortly.",
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Unexpected server error while processing the request.",
-        ) from exc
 
 
 def _resolve_host(target_url: str) -> tuple[bool, str]:
@@ -260,72 +169,19 @@ async def custom_swagger_ui_html() -> HTMLResponse:
     )
 
 
-@app.post("/match_jobs", response_model=MatchJobsResponse)
-async def match_jobs(payload: MatchJobsRequest) -> MatchJobsResponse:
-    if not payload.cv_text:
-        raise HTTPException(status_code=400, detail="cv_text is required.")
-    return await _run_service_or_raise(payload)
-
-
-@app.post("/match_jobs_actionable", response_model=ActionableMatchJobsResponse)
-async def match_jobs_actionable(payload: MatchJobsRequest) -> ActionableMatchJobsResponse:
-    if not payload.cv_text:
-        raise HTTPException(status_code=400, detail="cv_text is required.")
-
-    if payload.include_debug:
-        result, debug = await _run_service_with_debug_or_raise(payload)
-        response = _to_actionable_response(result)
-        response.debug = debug
-        return response
-
-    result = await _run_service_or_raise(payload)
-
-    return _to_actionable_response(result)
-
-
-@app.post("/match_jobs_from_cv", response_model=ActionableMatchJobsResponse)
-async def match_jobs_from_cv(
-    cv_file: UploadFile = File(...),
-    jobs_json: str = Form("[]"),
-    include_ingestion: bool = Form(False),
-    ingestion_sources_json: str = Form(
-        '["greenhouse","lever","workday","mycareersfuture","company_career_pages"]'
-    ),
-) -> ActionableMatchJobsResponse:
-    filename = (cv_file.filename or "").lower()
-    if not filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="cv_file must be a PDF.")
-
-    raw_bytes = await cv_file.read()
-    if not raw_bytes:
-        raise HTTPException(status_code=400, detail="cv_file is empty.")
+@app.post("/match_jobs", response_model=list[RankedJobResult])
+async def match_jobs(payload: RankJobsRequest) -> list[RankedJobResult]:
+    if not payload.job_urls:
+        raise HTTPException(status_code=400, detail="job_urls is required.")
 
     try:
-        cv_text = _extract_pdf_text(raw_bytes)
+        jobs = ingest_jobs_from_urls(payload.job_urls)
+        ranked = rank_jobs(job_list=jobs, user_profile=payload.user_profile, top_k=payload.top_k)
+        return ranked
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach TinyFish API for manual URL ingestion/enrichment.",
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Unable to parse PDF: {exc}") from exc
-
-    if not cv_text:
-        raise HTTPException(status_code=400, detail="No readable text found in PDF.")
-
-    try:
-        jobs = json.loads(jobs_json)
-        ingestion_sources = json.loads(ingestion_sources_json)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON form field: {exc}") from exc
-
-    payload = MatchJobsRequest(
-        cv_text=cv_text,
-        jobs=jobs,
-        include_ingestion=include_ingestion,
-        ingestion_sources=ingestion_sources,
-    )
-
-    if payload.include_debug:
-        result, debug = await _run_service_with_debug_or_raise(payload)
-        response = _to_actionable_response(result)
-        response.debug = debug
-        return response
-
-    result = await _run_service_or_raise(payload)
-    return _to_actionable_response(result)
+        raise HTTPException(status_code=500, detail="Unexpected server error.") from exc
