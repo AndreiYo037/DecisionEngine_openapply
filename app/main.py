@@ -144,11 +144,13 @@ async def _probe_http(target_url: str, *, headers: dict | None = None) -> tuple[
 
 @app.get("/diag/upstream")
 async def diag_upstream() -> dict:
-    tinyfish_dns_ok, tinyfish_dns_detail = _resolve_host(settings.tinyfish_base_url)
-    tinyfish_url = f"{settings.tinyfish_base_url.rstrip('/')}/v1/search"
+    tinyfish_url = settings.tinyfish_search_url
+    if "api.tinyfish.ai" in tinyfish_url:
+        tinyfish_url = "https://api.search.tinyfish.ai"
+    tinyfish_dns_ok, tinyfish_dns_detail = _resolve_host(tinyfish_url)
     tinyfish_http_ok, tinyfish_http_status, tinyfish_http_detail = await _probe_http(
         tinyfish_url,
-        headers={"Authorization": f"Bearer {settings.tinyfish_api_key}"},
+        headers={"X-API-Key": settings.tinyfish_api_key},
     )
 
     openai_base = "https://api.openai.com"
@@ -160,7 +162,7 @@ async def diag_upstream() -> dict:
 
     return {
         "tinyfish": {
-            "base_url": settings.tinyfish_base_url,
+            "base_url": tinyfish_url,
             "dns_ok": tinyfish_dns_ok,
             "dns_detail": tinyfish_dns_detail,
             "http_ok": tinyfish_http_ok,
