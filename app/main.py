@@ -2,6 +2,7 @@ import json
 from io import BytesIO
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +22,14 @@ app = FastAPI(
     description="Internship decision engine that returns only jobs with high fit and high-confidence contacts.",
     version="1.0.0",
     docs_url=None,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

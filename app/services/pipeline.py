@@ -51,7 +51,11 @@ class DecisionEngineService:
     async def ingest_jobs(self, sources: list[str]) -> list[NormalizedJob]:
         collected: list[dict] = []
         for source in sources:
-            scraped = await self.tinyfish.scrape_jobs(source=source, location="Singapore")
+            try:
+                scraped = await self.tinyfish.scrape_jobs(source=source, location="Singapore")
+            except Exception:
+                # Keep the strict pipeline running even when one ingestion source is unavailable.
+                continue
             for job in scraped:
                 job["source"] = source
             collected.extend(scraped)

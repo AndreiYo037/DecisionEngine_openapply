@@ -1,14 +1,12 @@
 import { useMemo, useState } from 'react';
-import CvDropzone from './components/CvDropzone';
 import JobCard from './components/JobCard';
 import MessageModal from './components/MessageModal';
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 function App() {
   const [stage, setStage] = useState('landing');
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [isDragging, setIsDragging] = useState(false);
+  const [cvText, setCvText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [opportunities, setOpportunities] = useState([]);
@@ -36,8 +34,8 @@ function App() {
   }, [opportunities, rolePreference, industryPreference]);
 
   const onAnalyze = async () => {
-    if (!selectedFile) {
-      setError('Please upload a PDF CV first.');
+    if (!cvText.trim()) {
+      setError('Please paste your CV text first.');
       return;
     }
 
@@ -46,25 +44,39 @@ function App() {
     setStage('upload');
 
     try {
-      const formData = new FormData();
-      formData.append('cv_file', selectedFile);
-      formData.append('include_ingestion', 'true');
-
-      const response = await fetch(`${API_BASE}/match_jobs_from_cv`, {
+      const response = await fetch(`${API_BASE}/match_jobs_actionable`, {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          cv_text: cvText.trim(),
+          jobs: [],
+          include_ingestion: true,
+        }),
       });
 
       if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.detail || 'Request failed');
+        const raw = await response.text();
+        let detail = 'Request failed';
+        try {
+          const payload = JSON.parse(raw);
+          detail = payload.detail || payload.message || detail;
+        } catch {
+          detail = raw || detail;
+        }
+        throw new Error(detail);
       }
 
       const payload = await response.json();
       setOpportunities(payload.opportunities || []);
       setStage('results');
     } catch (requestError) {
-      setError(requestError.message || 'Something went wrong.');
+      if (requestError instanceof TypeError) {
+        setError('Cannot reach backend API. Ensure backend is running on port 8000.');
+      } else {
+        setError(requestError.message || 'Something went wrong.');
+      }
       setStage('upload');
     } finally {
       setLoading(false);
@@ -95,19 +107,17 @@ function App() {
 
         {stage === 'upload' ? (
           <section className="rounded-3xl bg-white p-8 shadow-sm">
-            <h2 className="text-2xl font-semibold text-slate-900">Upload your CV</h2>
+            <h2 className="text-2xl font-semibold text-slate-900">Paste your CV text</h2>
             <p className="mt-2 text-slate-600">
               We will find only opportunities you can act on immediately.
             </p>
 
-            <div className="mt-6">
-              <CvDropzone
-                selectedFile={selectedFile}
-                onFileSelect={setSelectedFile}
-                isDragging={isDragging}
-                setIsDragging={setIsDragging}
-              />
-            </div>
+            <textarea
+              value={cvText}
+              onChange={(event) => setCvText(event.target.value)}
+              placeholder="Paste your full CV text here..."
+              className="mt-6 h-72 w-full rounded-2xl border border-slate-300 p-4 text-sm leading-6 text-slate-800 outline-none focus:border-slate-500"
+            />
 
             {error ? <p className="mt-4 text-sm text-rose-600">{error}</p> : null}
 
