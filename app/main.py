@@ -1,4 +1,7 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.models import MatchJobsRequest, MatchJobsResponse
 from app.services.pipeline import DecisionEngineService
@@ -7,7 +10,10 @@ app = FastAPI(
     title="DecisionEngine OpenApply",
     description="Internship decision engine that returns only jobs with high fit and high-confidence contacts.",
     version="1.0.0",
+    docs_url=None,
 )
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 service = DecisionEngineService()
 
@@ -15,6 +21,81 @@ service = DecisionEngineService()
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+async def home() -> HTMLResponse:
+    return HTMLResponse(
+        """
+        <!doctype html>
+        <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>DecisionEngine OpenApply</title>
+          <style>
+            body {
+              font-family: Inter, Segoe UI, Arial, sans-serif;
+              margin: 0;
+              padding: 32px;
+              background: #0b1020;
+              color: #e6edf7;
+            }
+            .card {
+              max-width: 780px;
+              margin: 48px auto;
+              padding: 28px;
+              border-radius: 14px;
+              background: linear-gradient(145deg, #121a33, #0d152b);
+              border: 1px solid #2a3761;
+              box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+            }
+            h1 { margin-top: 0; font-size: 28px; }
+            p { line-height: 1.6; color: #b8c4e1; }
+            a.button {
+              display: inline-block;
+              margin-top: 12px;
+              padding: 10px 16px;
+              border-radius: 10px;
+              text-decoration: none;
+              font-weight: 600;
+              color: #fff;
+              background: #3b82f6;
+            }
+            a.button:hover { background: #2563eb; }
+          </style>
+        </head>
+        <body>
+          <main class="card">
+            <h1>DecisionEngine OpenApply API</h1>
+            <p>
+              Internship decision engine that only returns jobs where the candidate
+              has both strong fit and high-confidence contacts.
+            </p>
+            <a class="button" href="/docs">Open API Docs</a>
+          </main>
+        </body>
+        </html>
+        """
+    )
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} Docs",
+        swagger_css_url="/static/swagger-custom.css",
+        swagger_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
+        swagger_ui_parameters={
+            "defaultModelsExpandDepth": 1,
+            "docExpansion": "list",
+            "deepLinking": True,
+            "displayRequestDuration": True,
+            "filter": True,
+            "tryItOutEnabled": True,
+        },
+    )
 
 
 @app.post("/match_jobs", response_model=MatchJobsResponse)

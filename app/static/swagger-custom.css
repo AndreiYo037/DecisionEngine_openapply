@@ -1,0 +1,56 @@
+body {
+  background: #f4f7fb;
+}
+
+.swagger-ui .topbar {
+  background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
+  border-bottom: 1px solid #1f3b66;
+}
+
+.swagger-ui .topbar .download-url-wrapper {
+  display: none;
+}
+
+.swagger-ui .info {
+  margin: 24px 0;
+}
+
+.swagger-ui .info .title {
+  color: #0f172a;
+  font-size: 2rem;
+}
+
+.swagger-ui .scheme-container {
+  background: #ffffff;
+  border-radius: 12px;
+  border: 1px solid #dbe5f2;
+  box-shadow: none;
+}
+
+.swagger-ui .opblock-tag {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.swagger-ui .opblock {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.swagger-ui .opblock.opblock-get {
+  border-color: #1d4ed8;
+}
+
+.swagger-ui .opblock.opblock-post {
+  border-color: #047857;
+}
+
+.swagger-ui .btn.execute {
+  background-color: #2563eb;
+  border-color: #2563eb;
+}
+
+.swagger-ui .btn.execute:hover {
+  background-color: #1d4ed8;
+  border-color: #1d4ed8;
+}
